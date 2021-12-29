@@ -1,0 +1,162 @@
+#!groovy?
+
+pipeline {
+
+	agent {label 'omni_slave1'}
+
+	parameters {
+        choice(name: 'target_env', choices: ['target2','generic',"lifepe"], description: 'target2 or generic')
+		choice(name: 'build_mode', choices: ['development','production'], description: 'mode build npm')
+		string(name: 'context_path', defaultValue: "integralmodern-web", description: 'target2: <domain>/integralmodern-web/')			
+    }
+	options {
+		buildDiscarder(logRotator(numToKeepStr: '7', artifactNumToKeepStr: '7'))
+		disableConcurrentBuilds()
+	}
+
+	environment {
+	s3url = "s3://dxc-diaas-asia-team/pnc-peformance/uiuxdevelopment.zip"
+	s3path = "s3://dxc-diaas-asia-team/pnc-peformance/"
+	region = "ap-southeast-1"
+    target_branch = "product"
+	COGNITOMODE_BOOLEAN = "false"
+	SSM_PRODMODE_BOOLEAN = "false"
+	EXTERNAL_DOMAIN = "https://hp.integral.digital"
+	}
+
+	stages {
+		stage('Set Build Version and Env Variable') {
+			steps {
+				script {				
+				def VERSION = VersionNumber projectStartDate: '2018-08-10', versionNumberString: '${BUILD_YEAR}.${BUILD_MONTH,XX}.${BUILD_DAY,XX}.${BUILD_NUMBER}', versionPrefix: ''
+				echo "${VERSION}"
+				env.DPLVERSION="${VERSION}"
+				currentBuild.displayName = VERSION
+
+				//checkout Repo source code to ${WORKSPACE}/AsiaPolicyCoreUI
+                checkout([$class: 'GitSCM', branches: [[name: "*/${target_branch}"]], doGenerateSubmoduleConfigurations: false,
+                extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'AsiaPolicyCoreUI']],
+                submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'bpham26_git', url: 'https://github.dxc.com/insurance/AsiaPolicyCoreUI.git']]])
+
+                checkout([$class: 'GitSCM', branches: [[name: "*/${target_branch}"]], doGenerateSubmoduleConfigurations: false, 
+                extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'AsiaPolicyCoreUI/src/policy-life']], 
+                submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'bpham26_git', url: 'https://github.dxc.com/insurance/AsiaPolicyLifeUI.git']]])
+
+                checkout([$class: 'GitSCM', branches: [[name: "*/${target_branch}"]], doGenerateSubmoduleConfigurations: false, 
+                extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'AsiaPolicyCoreUI/src/policy-group']], 
+                submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'bpham26_git', url: 'https://github.dxc.com/insurance/AsiaPolicyGroupUI.git']]])
+				}
+			}
+		}
+		//modify generic
+		// stage('STAGE 2 NPM BUILD') {
+		// 	steps {
+		// 		echo "stage 2 NPM INSTALL"
+		// 		 sh  """
+		// 		 cd ${WORKSPACE}/AsiaPolicyCoreUI/ && ls -al
+        //          echo "Copy config file to folder AsiaPolicyCoreUI" 
+		// 		 if [ ${target_env} == "target2" ]; then
+		// 		 	cp -rf ${WORKSPACE}/UIUX/config/environment.ts.${target_env} ./src/environments/environment.dev.ts
+		// 			 cp -rf ${WORKSPACE}/UIUX/config/environment.ts.${target_env} ./src/environments/environment.prod.ts
+		// 		 else
+		// 			cp -rf ${WORKSPACE}/UIUX/config/environment.ts.${target_env} ./src/environments/environment.dev.ts
+		// 			sed -i "s|REPLACEURL|${EXTERNAL_DOMAIN}|g" ./src/environments/environment.dev.ts
+        // 			sed -i "s|REPLACEPRODUCTION_BOOLEAN|${SSM_PRODMODE_BOOLEAN}|g" ./src/environments/environment.dev.ts
+        // 			sed -i "s|REPLACEP_COGNITO_BOOLEAN|${COGNITOMODE_BOOLEAN}|g" ./src/environments/environment.dev.ts
+		// 		 fi
+		// 		 cp -rf ${WORKSPACE}/UIUX/config/package.json ${WORKSPACE}/AsiaPolicyCoreUI/. && ls -al
+        //          /var/lib/jenkins/nodes/node-v14.17.6-linux-x64/bin/npm install
+		// 		 cd ${WORKSPACE}
+		// 		 zip -r uiux_npm.zip AsiaPolicyCoreUI/*
+        //          aws s3 cp uiux_npm.zip ${s3path} --quiet
+		// 		 """
+		// 	}
+		// }
+
+		stage('STAGE 2 NPM BUILD') {
+			steps {
+				echo "stage 2 NPM INSTALL"
+				 sh  """
+				 cd ${WORKSPACE}/AsiaPolicyCoreUI/ && ls -al
+                 echo "Copy config file to folder AsiaPolicyCoreUI" 
+				 if [ ${target_env} == "target2" ]; then
+				 	cp -rf ${WORKSPACE}/UIUX/config/environment.ts.${target_env} ./src/environments/environment.dev.ts
+					cp -rf ${WORKSPACE}/UIUX/config/environment.ts.${target_env} ./src/environments/environment.prod.ts
+				 else
+					cp -rf ${WORKSPACE}/UIUX/config/environment.ts.${target_env} ./src/environments/environment.prod.ts
+					sed -i "s|REPLACEURL|${EXTERNAL_DOMAIN}|g" ./src/environments/environment.prod.ts
+        			sed -i "s|REPLACEPRODUCTION_BOOLEAN|${SSM_PRODMODE_BOOLEAN}|g" ./src/environments/environment.prod.ts
+        			sed -i "s|REPLACEP_COGNITO_BOOLEAN|${COGNITOMODE_BOOLEAN}|g" ./src/environments/environment.prod.ts
+				 fi
+				 
+                 /var/lib/jenkins/nodes/node-v14.17.6-linux-x64/bin/npm install
+
+				 if [ ${build_mode} == "development" ]; then
+                 /var/lib/jenkins/nodes/node-v14.17.6-linux-x64/bin/ng build --configuration=development --base-href=/integralmodern-web/ --output-hashing=none
+				 else
+				 /var/lib/jenkins/nodes/node-v14.17.6-linux-x64/bin/ng build --configuration=production --watch --base-href=/integralmodern-web/ --deploy-url=/integralmodern-web/ --output-hashing=none
+				 fi
+				 ls -al
+				 echo "Remove *.map in compile folder" && rm -rf ${WORKSPACE}/AsiaPolicyCoreUI/dist/integral-web/*.map
+				 echo "Change folder name dist/integral-web to dist/${context_path}" && mv  dist/integral-web dist/${context_path}
+				 mv dist uiuxdevelopment
+                 ls -al
+                 zip -r uiuxdevelopment.zip uiuxdevelopment/*
+                 aws s3 cp uiuxdevelopment.zip ${s3path} --quiet
+				 """
+			}
+		}
+
+		stage('Stage 3: Build BASE Docker') {
+			steps {
+				echo "stage 3 build dockers"
+				sh """
+				echo "Copying folder NPM BUILD to ${WORKSPACE}/UIUX" && cp -rf ${WORKSPACE}/AsiaPolicyCoreUI/uiuxdevelopment  ${WORKSPACE}/UIUX/
+				cd ${WORKSPACE}/UIUX && ls -al
+				sed -i "s|REPLACE_CXPATH|${context_path}|g" Dockerfile
+				sed -i "s|REPLACE_CXPATH|${context_path}|g" default.conf
+				cat Dockerfile && cat default.conf
+				"""
+				sh "chmod 775 -R ${WORKSPACE}/Scripts/*.sh"
+				sh "${WORKSPACE}/Scripts/build-base-docker.sh UIUX diaas/ui-motor-new uiux-integral"
+			}
+		}
+				
+		stage('Stage 4 Pushing images to PDXC') {
+			steps {
+				script {
+					echo "Stage 4 Pushing images"
+					build job: "DEVOPS_PUSH_IMAGES_AWS_TO_PDXC", parameters: [
+						string(name: 'SOURCE_TAG', value: "uiux-integral"),
+						string(name: 'TARGET_TAG', value: "uiux-integral.${env.DPLVERSION}"),
+						string(name: 'AWS_REPOSITORY_PATH', value: "diaas/ui-motor-new"),
+						string(name: 'PDXC_PATH', value: "digitalinsurance-docker/integral/life/uiux"),
+					],
+					wait: true		
+					echo "Tagging images to latest"
+					build job: "DEVOPS_PUSH_IMAGES_AWS_TO_PDXC", parameters: [
+						string(name: 'SOURCE_TAG', value: "uiux-integral"),
+						string(name: 'TARGET_TAG', value: "uiux-integral"),
+						string(name: 'AWS_REPOSITORY_PATH', value: "diaas/ui-motor-new"),
+						string(name: 'PDXC_PATH', value: "digitalinsurance-docker/integral/life/uiux"),
+					],
+					wait: true	
+					
+					build job: "DEVOPS-TRIGGER-REMOTE-JENKINS-JOB", parameters: [
+					],
+					wait: true
+				}
+
+				}
+		}
+		
+	}
+
+	post {
+		always {
+			cleanWs()
+		}
+	}
+}
+
+//For Nginx: enable ALB ${context_path}/* && assets/* point to port container 80
